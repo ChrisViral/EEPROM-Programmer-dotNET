@@ -51,16 +51,79 @@ namespace EEPROM_Programmer
         private const ushort SIZE = 2048;
         #endregion
 
-        #region Fields
-        private readonly Stopwatch timer = new Stopwatch();
-        private ushort currentAddress = ushort.MaxValue;
-        #endregion
-
         #region Static properties
         /// <summary>
         /// Maximum resolution of the clock, amount of nanoseconds per clock tick
         /// </summary>
         public static long NanosecondsPerTick { get; } = NANOS_PER_SECOND / Stopwatch.Frequency;
+        #endregion
+
+        #region Fields
+        private readonly Stopwatch timer = new Stopwatch();
+        #endregion
+
+        #region Properties
+        private bool outputEnabled;
+        /// <summary>
+        /// OutputEnable flag of the EEPROM
+        /// </summary>
+        protected bool OutputEnabled
+        {
+            get => this.outputEnabled;
+            set
+            {
+                if (this.outputEnabled != value)
+                {
+                    this.outputEnabled = value;
+                    DigitalWrite(Pins.OUTPUT_ENABLE, value ? DigitalValue.Low : DigitalValue.High);
+                }
+            }
+        }
+
+        private ushort currentAddress = ushort.MaxValue;
+        /// <summary>
+        /// Current address of the EEPROM
+        /// </summary>
+        protected ushort Address
+        {
+            get => this.currentAddress;
+            set
+            {
+                if (this.currentAddress != value)
+                {
+                    //Set address in shift registers
+                    this.currentAddress = value;
+                    ShiftOut(Pins.SHIFT_DATA, Pins.SHIFT_CLOCK, HighByte(value));
+                    ShiftOut(Pins.SHIFT_DATA, Pins.SHIFT_CLOCK, LowByte(value));
+
+                    //Pulse latch clock
+                    DigitalWrite(Pins.LATCH_CLOCK, DigitalValue.High);
+                    DelayMicroseconds(10L);
+                    DigitalWrite(Pins.LATCH_CLOCK, DigitalValue.Low);
+                }
+            }
+        }
+
+        private PinMode currentMode = PinMode.Input;
+        /// <summary>
+        /// Pin mode of the data pins
+        /// </summary>
+        protected PinMode Mode
+        {
+            get => this.currentMode;
+            set
+            {
+                if (this.currentMode != value)
+                {
+                    //Set mode for all pins
+                    this.currentMode = value;
+                    for (Pins pin = Pins.DATA0; pin <= Pins.DATA7; pin++)
+                    {
+                        SetPinMode(pin, value);
+                    }
+                }
+            }
+        }
         #endregion
 
         #region Constructors
@@ -107,6 +170,9 @@ namespace EEPROM_Programmer
         /// </summary>
         private void Setup()
         {
+            //Notify connection
+            Console.WriteLine("Connected to Arduino board");
+
             //Setup pin modes
             SetPinMode(Pins.SHIFT_DATA,  PinMode.Output);
             SetPinMode(Pins.SHIFT_CLOCK, PinMode.Output);
@@ -118,47 +184,7 @@ namespace EEPROM_Programmer
 
             //Setup output enable pin
             SetPinMode(Pins.OUTPUT_ENABLE, PinMode.Output);
-            SetOutputEnabled(true);
-        }
-
-        /// <summary>
-        /// Sets the EEPROM output enabled flag state
-        /// </summary>
-        /// <param name="enabled">If the output is enabled or not</param>
-        protected void SetOutputEnabled(bool enabled) => DigitalWrite(Pins.OUTPUT_ENABLE, enabled ? DigitalValue.Low : DigitalValue.High);
-
-        /// <summary>
-        /// Sets the data pins to the specified mode
-        /// </summary>
-        /// <param name="mode">Mode to put the data pins in</param>
-        protected void SetDataPinModes(PinMode mode)
-        {
-            //Set mode for all pins
-            for (Pins pin = Pins.DATA0; pin <= Pins.DATA7; pin++)
-            {
-                SetPinMode(pin, mode);
-            }
-        }
-
-        /// <summary>
-        /// Sets the specified address into the shift register
-        /// </summary>
-        /// <param name="address">Address to set</param>
-        protected void SetAddress(ushort address)
-        {
-            //Make sure the address isn't already set
-            if (address != this.currentAddress)
-            {
-                //Set address in shift registers
-                this.currentAddress = address;
-                ShiftOut(Pins.SHIFT_DATA, Pins.SHIFT_CLOCK, HighByte(address));
-                ShiftOut(Pins.SHIFT_DATA, Pins.SHIFT_CLOCK, LowByte(address));
-
-                //Pulse latch clock
-                DigitalWrite(Pins.LATCH_CLOCK, DigitalValue.High);
-                DelayMicroseconds(10L);
-                DigitalWrite(Pins.LATCH_CLOCK, DigitalValue.Low);
-            }
+            this.OutputEnabled = true;
         }
 
         /// <summary>
@@ -169,7 +195,9 @@ namespace EEPROM_Programmer
         protected byte ReadAtAddress(ushort address)
         {
             //Set address
-            SetAddress(address);
+            this.Address = address;
+            this.Mode = PinMode.Input;
+            this.OutputEnabled = true;
 
             //Get value from each pin
             int value = 0;
@@ -190,9 +218,9 @@ namespace EEPROM_Programmer
         protected void WriteAtAddress(ushort address, byte value)
         {
             //Set address and pin mode
-            SetAddress(address);
-            SetOutputEnabled(false);
-            SetDataPinModes(PinMode.Output);
+            this.Address = address;
+            this.OutputEnabled = false;
+            this.Mode = PinMode.Output;
 
             //Keep reference to MSB
             int msb = value >> 7;
@@ -206,17 +234,15 @@ namespace EEPROM_Programmer
 
             //Pulse write signal
             DigitalWrite(Pins.WRITE_ENABLE, DigitalValue.Low);
-            DelayNanoseconds(500L);
+            //DelayNanoseconds(500L);
             DigitalWrite(Pins.WRITE_ENABLE, DigitalValue.High);
-            DelayMicroseconds(2200);
+            //DelayMicroseconds(2200);
 
             //Check for write end using data polling
-            SetDataPinModes(PinMode.Input);
-            SetOutputEnabled(true);
-            while (DigitalRead(Pins.DATA7) != msb)
-            {
-                DelayMicroseconds(10);
-            }
+            SetPinMode(Pins.DATA7, PinMode.Input);
+            this.OutputEnabled = true;
+            while (DigitalRead(Pins.DATA7) != msb) { }
+            SetPinMode(Pins.DATA7, PinMode.Output);
         }
 
         /// <summary>
@@ -229,6 +255,7 @@ namespace EEPROM_Programmer
             //Check write size
             if (data.Length > SIZE) throw new ArgumentOutOfRangeException(nameof(data), data.Length, "Written data must fit within the EEPROM (max 2Kb)");
 
+            Console.WriteLine("Writing Data");
             //Write sequentially to the EEPROM
             for (ushort address = 0; address < data.Length; address++)
             {
@@ -247,6 +274,7 @@ namespace EEPROM_Programmer
             const ushort maxLines = SIZE / stride;
             const int lineSize = (3 * stride) + 8;
 
+            Console.WriteLine("Printing data");
             //Setup for writing
             lines = Math.Min(Math.Max(lines, 1), maxLines);
             int size = lines * stride;
