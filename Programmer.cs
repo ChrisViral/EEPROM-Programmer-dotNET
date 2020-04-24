@@ -67,7 +67,7 @@ namespace EEPROM_Programmer
         /// <summary>
         /// Creates a new EEPROM Programmer on the default port
         /// </summary>
-        protected Programmer() : base(ArduinoModel.NanoR2, true) => Setup();
+        protected Programmer() : base(ArduinoModel.NanoR3, true) => Setup();
 
         /// <summary>
         /// Creates a new EEPROM Programmer on the specified port
